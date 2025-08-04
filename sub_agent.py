@@ -1,5 +1,5 @@
-from deepagents.prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
-from deepagents.state import DeepAgentState
+from prompts import TASK_DESCRIPTION_PREFIX, TASK_DESCRIPTION_SUFFIX
+from state import DeepAgentState
 from langgraph.prebuilt import create_react_agent
 from langchain_core.tools import BaseTool
 from typing import TypedDict
@@ -7,7 +7,6 @@ from langchain_core.tools import tool, InjectedToolCallId
 from langchain_core.messages import ToolMessage
 from typing import Annotated, NotRequired
 from langgraph.types import Command
-
 from langgraph.prebuilt import InjectedState
 
 
@@ -17,45 +16,47 @@ class SubAgent(TypedDict):
     prompt: str
     tools: NotRequired[list[str]]
 
-
-def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema):
+# The _create_task_tool is called only once to return the task tool object for the agent.
+def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, state_schema): 
+    # The agents dictionary contains the general-purpose agent and the subagents.
     agents = {
         "general-purpose": create_react_agent(model, prompt=instructions, tools=tools)
     }
+
+    # The tools parameter is from the main agent and all subagents.
     tools_by_name = {}
     for tool_ in tools:
         if not isinstance(tool_, BaseTool):
             tool_ = tool(tool_)
         tools_by_name[tool_.name] = tool_
+
     for _agent in subagents:
         if "tools" in _agent:
-            _tools = [tools_by_name[t] for t in _agent["tools"]]
+            _tools = [tools_by_name[t] for t in _agent["tools"]] # Each subagent has access only to the tools specified in its definition.
         else:
             _tools = tools
-        agents[_agent["name"]] = create_react_agent(
-            model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema
-        )
+        agents[_agent["name"]] = create_react_agent(model, prompt=_agent["prompt"], tools=_tools, state_schema=state_schema)
 
-    other_agents_string = [
-        f"- {_agent['name']}: {_agent['description']}" for _agent in subagents
-    ]
+    # List of subagents to be used in the tool description.
+    other_agents_string = [f"- {_agent['name']}: {_agent['description']}" for _agent in subagents]
 
-    @tool(
-        description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string)
-        + TASK_DESCRIPTION_SUFFIX
-    )
+    # Decorator wraps the task function to return as a tool object for delegation to subagents. 
+    @tool(description=TASK_DESCRIPTION_PREFIX.format(other_agents=other_agents_string) + TASK_DESCRIPTION_SUFFIX)
     def task(
         description: str,
-        subagent_type: str,
+        subagent_type: str, # The name of the subagent. 
         state: Annotated[DeepAgentState, InjectedState],
         tool_call_id: Annotated[str, InjectedToolCallId],
     ):
         if subagent_type not in agents:
             return f"Error: invoked agent of type {subagent_type}, the only allowed types are {[f'`{k}`' for k in agents]}"
+        
         sub_agent = agents[subagent_type]
         state["messages"] = [{"role": "user", "content": description}]
-        result = sub_agent.invoke(state)
-        return Command(
+        result = sub_agent.invoke(state) # Executes the subagent using create_react_agent.
+
+        # Updates the state with the result of the subagent.
+        return Command( 
             update={
                 "files": result.get("files", {}),
                 "messages": [
@@ -66,4 +67,5 @@ def _create_task_tool(tools, instructions, subagents: list[SubAgent], model, sta
             }
         )
 
+    # The LLM automatically calls the task function as one of its tools within the agent. 
     return task
